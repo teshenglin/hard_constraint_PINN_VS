@@ -2,10 +2,7 @@ import numpy as np
 import torch
 from torch.func import vmap, grad
 
-try:
-    from pyDOE import lhs  # type: ignore
-except Exception:
-    from pyDOE2 import lhs  # type: ignore
+from data import latin_hypercube
 
 def sample_interior_lhs(
     x_min, x_max, y_min, y_max, t_min, t_max,
@@ -19,16 +16,15 @@ def sample_interior_lhs(
     If t_fixed is not None, sample only (x,y) and set t=t_fixed.
     Returns X_np shape (N,3) and also x,y,t column arrays for exact soln.
     """
-    if seed is not None:
-        np.random.seed(seed)
+    rng = np.random.default_rng(seed)
 
     if t_fixed is None:
-        X_unit = lhs(3, N)
+        X_unit = latin_hypercube(3, N, rng)
         x = x_min + (x_max - x_min) * X_unit[:, 0:1]
         y = y_min + (y_max - y_min) * X_unit[:, 1:2]
         t = t_min + (t_max - t_min) * X_unit[:, 2:3]
     else:
-        X_unit = lhs(2, N)
+        X_unit = latin_hypercube(2, N, rng)
         x = x_min + (x_max - x_min) * X_unit[:, 0:1]
         y = y_min + (y_max - y_min) * X_unit[:, 1:2]
         t = np.full((N, 1), t_fixed)
@@ -124,10 +120,12 @@ def evaluate_errors(
     assert exact_omega_np is not None
     assert exact_psix_np is not None and exact_psiy_np is not None
 
+    value_rng, grad_rng = np.random.SeedSequence(seed).spawn(2)
+
     # --- value errors (omega)
     X_np, x_np, y_np, t_np = sample_interior_lhs(
         x_min, x_max, y_min, y_max, t_min, t_max,
-        N=N_val, t_fixed=t_fixed, seed=seed, dtype=dtype_np
+        N=N_val, t_fixed=t_fixed, seed=int(value_rng.generate_state(1, dtype=np.uint64)[0]), dtype=dtype_np
     )
     X_t = torch.as_tensor(X_np, device=device, dtype=dtype_torch)
     # values do NOT need input grads
@@ -140,7 +138,7 @@ def evaluate_errors(
     # --- gradient errors (grad psi) — use smaller N_grad for speed
     Xg_np, xg, yg, tg = sample_interior_lhs(
         x_min, x_max, y_min, y_max, t_min, t_max,
-        N=N_grad, t_fixed=t_fixed, seed=None if seed is None else seed + 12345, dtype=dtype_np
+        N=N_grad, t_fixed=t_fixed, seed=int(grad_rng.generate_state(1, dtype=np.uint64)[0]), dtype=dtype_np
     )
     Xg_t = torch.as_tensor(Xg_np, device=device, dtype=dtype_torch)
     Xg_t.requires_grad_(True)

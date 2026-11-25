@@ -2,11 +2,14 @@ import numpy as np
 import torch
 from typing import Tuple, Optional, Union, Sequence
 
-try:
-    # pyDOE / pyDOE2 style
-    from pyDOE import lhs  # type: ignore
-except Exception:
-    from pyDOE2 import lhs  # type: ignore
+def latin_hypercube(dimensions: int, count: int, rng: np.random.Generator):
+    """Draw one point in each stratum of every coordinate."""
+    if count < 0:
+        raise ValueError("LHS point count must be nonnegative")
+    if count == 0:
+        return np.empty((0, dimensions))
+    strata = np.column_stack([rng.permutation(count) for _ in range(dimensions)])
+    return (strata + rng.random((count, dimensions))) / count
 
 
 def sample_periodic_training_points(
@@ -29,13 +32,8 @@ def sample_periodic_training_points(
         Y0_bd,Y1_bd: (N_boundary, 3) paired periodic points on y=y_min and y=y_max sharing (x,t)
     """
 
-    # ---- interior points: LHS in (x,y,t)
-    # pyDOE lhs uses global RNG; to keep determinism, we generate our own uniform and "lhs" via pyDOE.
-    # Practical compromise: set np.random.seed if you need strict repeatability across runs.
-    if seed is not None:
-        np.random.seed(seed)
-
-    sampling = lhs(3, N_interior)  # (N_interior, 3) in [0,1]^3
+    rng = np.random.default_rng(seed)
+    sampling = latin_hypercube(3, N_interior, rng)
 
     x_in = x_min + (x_max - x_min) * sampling[:, 0:1]
     y_in = y_min + (y_max - y_min) * sampling[:, 1:2]
@@ -43,21 +41,21 @@ def sample_periodic_training_points(
     X_inner = np.hstack((x_in, y_in, t_in))
 
     # ---- initial points: (x,y) LHS, t=t_min
-    x0 = x_min + (x_max - x_min) * lhs(1, N_initial)
-    y0 = y_min + (y_max - y_min) * lhs(1, N_initial)
+    x0 = x_min + (x_max - x_min) * latin_hypercube(1, N_initial, rng)
+    y0 = y_min + (y_max - y_min) * latin_hypercube(1, N_initial, rng)
     t0 = np.full((N_initial, 1), t_min)
     X_initial = np.hstack((x0, y0, t0))
 
     # ---- periodic x-faces: share (y,t)
-    y_shared = y_min + (y_max - y_min) * lhs(1, N_boundary)
-    t_shared_x = t_min + (t_max - t_min) * lhs(1, N_boundary)
+    y_shared = y_min + (y_max - y_min) * latin_hypercube(1, N_boundary, rng)
+    t_shared_x = t_min + (t_max - t_min) * latin_hypercube(1, N_boundary, rng)
 
     X0_bd = np.hstack((np.full((N_boundary, 1), x_min), y_shared, t_shared_x))
     X1_bd = np.hstack((np.full((N_boundary, 1), x_max), y_shared, t_shared_x))
 
     # ---- periodic y-faces: share (x,t)
-    x_shared = x_min + (x_max - x_min) * lhs(1, N_boundary)
-    t_shared_y = t_min + (t_max - t_min) * lhs(1, N_boundary)
+    x_shared = x_min + (x_max - x_min) * latin_hypercube(1, N_boundary, rng)
+    t_shared_y = t_min + (t_max - t_min) * latin_hypercube(1, N_boundary, rng)
 
     Y0_bd = np.hstack((x_shared, np.full((N_boundary, 1), y_min), t_shared_y))
     Y1_bd = np.hstack((x_shared, np.full((N_boundary, 1), y_max), t_shared_y))
@@ -91,3 +89,15 @@ def to_torch(*arrays, device=None, dtype=torch.float64, requires_grad: Union[boo
         tensors.append(t)
     return tensors
     
+
+
+def sample_gauge_points(x_min, x_max, y_min, y_max, t_min, t_max, N_times, N_space, seed=None):
+    """Reuse one spatial Latin hypercube at every gauge time."""
+    if min(N_times, N_space) < 1:
+        raise ValueError("Gauge time and spatial point counts must be positive")
+    xy = latin_hypercube(2, N_space, np.random.default_rng(seed))
+    xy = np.array([x_min, y_min]) + xy * np.array([x_max - x_min, y_max - y_min])
+    points = np.empty((N_times, N_space, 3))
+    points[:, :, :2] = xy
+    points[:, :, 2] = np.linspace(t_min, t_max, N_times)[:, None]
+    return points
